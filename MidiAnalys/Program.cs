@@ -186,8 +186,8 @@ namespace MidiAnalys
 
         public override string ToString()
         {
-            var noteNum = (float)tick / ticksInCrotchet * beat.Value / 4;
-            return $"{nameof(tick)}: {tick}, bar: {(int) noteNum / beat.Key}-{noteNum % beat.Key}, {nameof(pitch)}: {pitch}, {nameof(velocity)}: {velocity}";
+            var noteNum = (float) tick / ticksInCrotchet * beat.Value / 4;
+            return $"{nameof(tick)}: {tick,10}, bar: {(int) noteNum / beat.Key,3}-{noteNum % beat.Key,-4}, {nameof(pitch)}: {pitch,2}, {nameof(velocity)}: {velocity}";
         }
     }
 }
