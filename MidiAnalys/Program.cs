@@ -2,7 +2,10 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net.Http.Json;
+using System.Text;
 using System.Threading.Tasks;
+using Newtonsoft.Json;
 
 namespace MidiAnalys
 {
@@ -12,19 +15,36 @@ namespace MidiAnalys
 
         static async Task Main(string[] args)
         {
-            var fs   = File.OpenRead(args[0]);
-            var temp = new byte[4];
-            await fs.ReadAsync(temp.AsMemory(0, 4));
-            await fs.ReadAsync(temp.AsMemory(0, 4));
-            await fs.ReadAsync(temp.AsMemory(0, 2));
-            var mode = temp[0] * 16 + temp[1];
-            await fs.ReadAsync(temp.AsMemory(0, 2));
-            var trackCount = temp[0] * 16 + temp[1];
-            await fs.ReadAsync(temp.AsMemory(0, 2));
-            Note.ticksInCrotchet = temp[0] * 16 + temp[1];
-            byte[] buffer = Array.Empty<byte>();
-            for (int i = 0; i < trackCount; i++)
+            for (int j = 0; j < args.Length; j++)
             {
+                var file = new FileInfo(args[j]);
+                if (file.Extension != ".mid") continue;
+                var fs   = file.OpenRead();
+                var temp = new byte[4];
+                await fs.ReadAsync(temp.AsMemory(0, 4));
+                await fs.ReadAsync(temp.AsMemory(0, 4));
+                await fs.ReadAsync(temp.AsMemory(0, 2));
+                var mode = temp[0] * 16 + temp[1];
+                await fs.ReadAsync(temp.AsMemory(0, 2));
+                var trackCount = temp[0] * 16 + temp[1];
+                await fs.ReadAsync(temp.AsMemory(0, 2));
+                Note.ticksInCrotchet = temp[0] * 16 + temp[1];
+                byte[] buffer = Array.Empty<byte>();
+                for (int i = 0; i < 2; i++)
+                {
+                    await fs.ReadAsync(temp.AsMemory(0, 4));
+                    await fs.ReadAsync(temp.AsMemory(0, 4));
+
+                    buffer = new byte[
+                        temp[0] * 256 * 256 * 256 +
+                        temp[1] * 256 * 256 +
+                        temp[2] * 256 +
+                        temp[3]
+                    ];
+                    await fs.ReadAsync(buffer.AsMemory(0, buffer.Length));
+                    Analyse(buffer);
+                }
+
                 await fs.ReadAsync(temp.AsMemory(0, 4));
                 await fs.ReadAsync(temp.AsMemory(0, 4));
 
@@ -35,17 +55,33 @@ namespace MidiAnalys
                     temp[3]
                 ];
                 await fs.ReadAsync(buffer.AsMemory(0, buffer.Length));
-                Analyse(buffer);
+                var nodeList = Analyse(buffer);
+
+                await fs.ReadAsync(temp.AsMemory(0, 4));
+                await fs.ReadAsync(temp.AsMemory(0, 4));
+
+                buffer = new byte[
+                    temp[0] * 256 * 256 * 256 +
+                    temp[1] * 256 * 256 +
+                    temp[2] * 256 +
+                    temp[3]
+                ];
+                await fs.ReadAsync(buffer.AsMemory(0, buffer.Length));
+                var slipNodeList = Analyse(buffer);
+
+                Console.WriteLine($"bpm is {Note.bpm}");
+                Console.WriteLine($"beat is {Note.beat.Key}/{Note.beat.Value}");
+                Console.WriteLine($"ticksInCrotchet is {Note.ticksInCrotchet}");
+                Console.WriteLine($"node count is {nodeList.Count}");
+                Console.WriteLine(string.Join("\n", nodeList));
+
+                var list = nodeList.Select(x => new MusicNoteData(NoteType.Click, MusicNoteData.GetClickIndex(x.pitch), x.tick * 60f / Note.bpm / Note.ticksInCrotchet, 1)).ToList();
+                list.AddRange(slipNodeList.Select(x => new MusicNoteData(NoteType.Combo, MusicNoteData.GetClickIndex(x.pitch), x.tick * 60f / Note.bpm / Note.ticksInCrotchet, 1)).ToList());
+                list = list.OrderBy(x => x.timeStart).ToList();
+                var output = File.Create(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), $"{file.Name[..^file.Extension.Length]}.json"));
+                output.Write(Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(list)));
+                output.Close();
             }
-
-            var nodeList = Analyse(buffer);
-            Console.WriteLine($"bpm is {Note.bpm}");
-            Console.WriteLine($"beat is {Note.beat.Key}/{Note.beat.Value}");
-            Console.WriteLine($"ticksInCrotchet is {Note.ticksInCrotchet}");
-            Console.WriteLine($"node count is {nodeList.Count}");
-            Console.WriteLine(string.Join("\n", nodeList));
-
-            Console.ReadKey();
         }
 
         private static unsafe List<Note> Analyse(byte[] buffer)
@@ -189,5 +225,68 @@ namespace MidiAnalys
             var noteNum = (float) tick / ticksInCrotchet * beat.Value / 4;
             return $"{nameof(tick)}: {tick,10}, bar: {(int) noteNum / beat.Key,3}-{noteNum % beat.Key,-4}, {nameof(pitch)}: {pitch,2}, {nameof(velocity)}: {velocity}";
         }
+    }
+
+
+    public class MusicNoteData
+    {
+        /// <summary>
+        /// 类型
+        /// </summary>
+        public NoteType type;
+
+        public int index;
+
+        /// <summary>
+        /// 开始时间
+        /// </summary>
+        public float timeStart;
+
+        /// <summary>
+        /// 消耗时间
+        /// </summary>
+        public float timeConsuming;
+
+        public MusicNoteData(NoteType type, int index, float timeStart, float timeConsuming)
+        {
+            this.type          = type;
+            this.index         = index;
+            this.timeStart     = timeStart;
+            this.timeConsuming = timeConsuming;
+        }
+
+        public static int GetClickIndex(int pitch)
+        {
+            var index = pitch switch
+            {
+                48 => 1,
+                50 => 2,
+                52 => 3,
+                53 => 4,
+                55 => 5,
+                57 => 6,
+                59 => 7,
+                _  => 1
+            };
+            var offset            = (pitch - 48) / 12 * 7;
+            if (offset > 0) index += offset;
+            return index;
+        }
+    }
+
+    /// <summary>
+    /// 音符类型
+    /// </summary>
+    public enum NoteType
+    {
+        /// <summary>
+        /// 单击
+        /// </summary>
+        Click,
+
+        /// <summary>
+        /// 连击
+        /// </summary>
+        Combo
     }
 }
