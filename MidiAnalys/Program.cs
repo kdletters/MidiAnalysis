@@ -19,22 +19,27 @@ namespace MidiAnalys
             {
                 var file = new FileInfo(args[j]);
                 if (file.Extension != ".mid") continue;
-                var fs   = file.OpenRead();
-                var temp = new byte[4];
-                await fs.ReadAsync(temp.AsMemory(0, 4));
-                await fs.ReadAsync(temp.AsMemory(0, 4));
-                await fs.ReadAsync(temp.AsMemory(0, 2));
-                var mode = temp[0] * 16 + temp[1];
-                await fs.ReadAsync(temp.AsMemory(0, 2));
-                var trackCount = temp[0] * 16 + temp[1];
-                await fs.ReadAsync(temp.AsMemory(0, 2));
-                Note.ticksInCrotchet = temp[0] * 16 + temp[1];
-                byte[] buffer = Array.Empty<byte>();
+                var fs = file.OpenRead();
+
+                #region 获取头信息
+
+                var header = new byte[14];
+                await fs.ReadAsync(header.AsMemory(0, 14));
+                var index      = 8;
+                var mode       = header[index++] * 16 + header[index++];
+                var trackCount = header[index++] * 16 + header[index++];
+                Note.TicksInCrotchet = header[index++] * 16 + header[index++];
+
+                #endregion
+
+                byte[] buffer;
+                var    temp = new byte[4];
                 for (int i = 0; i < 2; i++)
                 {
                     await fs.ReadAsync(temp.AsMemory(0, 4));
                     await fs.ReadAsync(temp.AsMemory(0, 4));
 
+                    //读取数据长度
                     buffer = new byte[
                         temp[0] * 256 * 256 * 256 +
                         temp[1] * 256 * 256 +
@@ -45,9 +50,12 @@ namespace MidiAnalys
                     Analyse(buffer);
                 }
 
+                #region 读取第一轨
+
                 await fs.ReadAsync(temp.AsMemory(0, 4));
                 await fs.ReadAsync(temp.AsMemory(0, 4));
 
+                //读取数据长度
                 buffer = new byte[
                     temp[0] * 256 * 256 * 256 +
                     temp[1] * 256 * 256 +
@@ -57,9 +65,14 @@ namespace MidiAnalys
                 await fs.ReadAsync(buffer.AsMemory(0, buffer.Length));
                 var nodeList = Analyse(buffer);
 
+                #endregion
+
+                #region 读取第二轨
+
                 await fs.ReadAsync(temp.AsMemory(0, 4));
                 await fs.ReadAsync(temp.AsMemory(0, 4));
 
+                //读取数据长度
                 buffer = new byte[
                     temp[0] * 256 * 256 * 256 +
                     temp[1] * 256 * 256 +
@@ -69,16 +82,18 @@ namespace MidiAnalys
                 await fs.ReadAsync(buffer.AsMemory(0, buffer.Length));
                 var slipNodeList = Analyse(buffer);
 
-                Console.WriteLine($"bpm is {Note.bpm}");
+                #endregion
+
+                Console.WriteLine($"bpm is {Note.Bpm}");
                 Console.WriteLine($"beat is {Note.beat.Key}/{Note.beat.Value}");
-                Console.WriteLine($"ticksInCrotchet is {Note.ticksInCrotchet}");
+                Console.WriteLine($"ticksInCrotchet is {Note.TicksInCrotchet}");
                 Console.WriteLine($"node count is {nodeList.Count}");
                 Console.WriteLine(string.Join("\n", nodeList));
 
-                var list = nodeList.Select(x => new MusicNoteData(NoteType.Click, MusicNoteData.GetClickIndex(x.pitch), x.tick * 60f / Note.bpm / Note.ticksInCrotchet, 1)).ToList();
-                list.AddRange(slipNodeList.Select(x => new MusicNoteData(NoteType.Combo, MusicNoteData.GetClickIndex(x.pitch), x.tick * 60f / Note.bpm / Note.ticksInCrotchet, 1)).ToList());
+                var list = nodeList.Select(x => new MusicNoteData(NoteType.Click, MusicNoteData.GetClickIndex(x.pitch), x.tick * 60f / Note.Bpm / Note.TicksInCrotchet, 1)).ToList();
+                list.AddRange(slipNodeList.Select(x => new MusicNoteData(NoteType.Combo, MusicNoteData.GetClickIndex(x.pitch), x.tick * 60f / Note.Bpm / Note.TicksInCrotchet, 1)).ToList());
                 list = list.OrderBy(x => x.timeStart).ToList();
-                var output = File.Create(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), $"{file.Name[..^file.Extension.Length]}.json"));
+                var output = File.Create(System.IO.Path.Combine(Environment.CurrentDirectory, $"{file.Name[..^file.Extension.Length]}.json"));
                 output.Write(Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(list)));
                 output.Close();
             }
@@ -98,13 +113,14 @@ namespace MidiAnalys
 
             for (int i = 0; i < bufferLength; i++)
             {
+                //音轨结束标记
                 if (buffer[i] == 0xFF &&
                     buffer[i + 1] == 0x2F &&
                     buffer[i + 2] == 0x00) break;
 
                 switch (phase)
                 {
-                    case 0:
+                    case 0: //读取时间戳
                     {
                         if ((buffer[i] & 0b_1000_0000) == 0b_0000_0000)
                             phase++;
@@ -112,11 +128,11 @@ namespace MidiAnalys
                         temp[index++] = buffer[i];
                         break;
                     }
-                    case 1:
+                    case 1: //读取操作码
                     {
                         switch (buffer[i])
                         {
-                            case 0x90:
+                            case 0x90: //按下事件
                             {
                                 phase++;
                                 break;
@@ -124,38 +140,38 @@ namespace MidiAnalys
                             case 0x80:
                             case 0xa0:
                             case 0xb0:
-                            case 0xe0:
+                            case 0xe0: //未处理的操作码
                             {
                                 phase =  0;
                                 i     += 2;
                                 break;
                             }
                             case 0xc0:
-                            case 0xd0:
+                            case 0xd0: //未处理的操作码
                             {
                                 phase = 0;
                                 i++;
                                 break;
                             }
-                            case 0xFF:
+                            case 0xFF: //特殊操作码
                             {
                                 switch (buffer[i + 1])
                                 {
-                                    case 0x51:
+                                    case 0x51: //定义曲速（一拍的时间，单位微秒）
                                     {
                                         var tempo = buffer[i + +3] * 256 * 256 +
                                                     buffer[i + +4] * 256 +
                                                     buffer[i + +5];
-                                        Note.bpm = 60000000 / tempo;
+                                        Note.Bpm = 60000000 / tempo;
                                         break;
                                     }
-                                    case 0x58:
+                                    case 0x58: //定义节拍
                                         Note.beat = new KeyValuePair<int, int>(buffer[i + +3], (int) Math.Pow(2, buffer[i + +4]));
                                         break;
                                 }
 
                                 phase =  0;
-                                i     += buffer[i + 2] + 2;
+                                i     += buffer[i + 2] + 2; //0xFF后面的第二位字节记录剩余操作码长度
                                 break;
                             }
                             default:
@@ -188,13 +204,13 @@ namespace MidiAnalys
                         index = 0;
                         break;
                     }
-                    case 2:
+                    case 2: //读取音高
                     {
                         pitch = buffer[i];
                         phase++;
                         break;
                     }
-                    case 3:
+                    case 3: //读取力度
                     {
                         velocity = buffer[i];
                         nodeList.Add(new Note(tick, pitch, velocity));
@@ -216,13 +232,13 @@ namespace MidiAnalys
 
     public record Note(int tick, byte pitch, byte velocity)
     {
-        public static int bpm = 120;
-        public static int ticksInCrotchet; //四分音符的tick数
+        public static int Bpm = 120;
+        public static int TicksInCrotchet; //一个四分音符的tick数
         public static KeyValuePair<int, int> beat;
 
         public override string ToString()
         {
-            var noteNum = (float) tick / ticksInCrotchet * beat.Value / 4;
+            var noteNum = (float) tick / TicksInCrotchet * beat.Value / 4;
             return $"{nameof(tick)}: {tick,10}, bar: {(int) noteNum / beat.Key,3}-{noteNum % beat.Key,-4}, {nameof(pitch)}: {pitch,2}, {nameof(velocity)}: {velocity}";
         }
     }
